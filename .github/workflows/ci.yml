@@ -1,0 +1,36 @@
+name: macOS build and tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run regression tests
+        run: zsh test.command
+      - name: Build universal macOS app
+        run: zsh build.command
+      - name: Verify build
+        run: |
+          codesign --verify --deep --strict dist/炉边记牌器.app
+          lipo dist/炉边记牌器.app/Contents/MacOS/Lubian -verify_arch arm64 x86_64
+          unzip -tq dist/炉边记牌器-Mac.zip
+      - name: Upload app archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: lubian-tracker-macos
+          path: dist/炉边记牌器-Mac.zip
+          if-no-files-found: error
+          retention-days: 14
