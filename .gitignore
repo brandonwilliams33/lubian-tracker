@@ -1,0 +1,16 @@
+.DS_Store
+build/
+dist/
+*.app/
+*.zip
+*.log
+Logs/
+cards.json
+deck.json
+decks.json
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision
+xcuserdata/
