@@ -1,5 +1,6 @@
 import Cocoa
 import SwiftUI
+import UniformTypeIdentifiers
 
 extension Notification.Name {
     static let hideTrackerSettings = Notification.Name("app.lubian.tracker.hideSettings")
@@ -29,6 +30,10 @@ final class Model: ObservableObject {
     var tracker = Tracker()
     @Published var connectionText = "未连接日志"
     @Published var lastLogUpdate: Date?
+    @Published var includeDiagnosticNames = false
+    @Published var diagnosticStatus = ""
+    private var lastLogBytes: UInt64 = 0
+    private var lastLogTotal: UInt64 = 0
     @Published var autoPlayer = true
     private let reader = LogReader()
     private let logQueue = DispatchQueue(label: "app.lubian.log-reader", qos: .userInitiated)
@@ -118,6 +123,17 @@ final class Model: ObservableObject {
             root = found; path = found.path; UserDefaults.standard.set(path, forKey: "logRoot")
         }
     }
+    func diagnosticData() throws -> Data {
+        try DiagnosticReport.make(DiagnosticInput(tracker: tracker, library: library, player: player, autoDeck: autoDeck, autoPlayer: autoPlayer, demo: demo, logRoot: root, logFile: file, bytesRead: lastLogBytes, logSize: lastLogTotal, lastModified: lastLogUpdate, status: status, includeNames: includeDiagnosticNames)).json()
+    }
+    /// 导出已脱敏的诊断 JSON；由用户选择保存位置，不会自动上传。
+    func exportDiagnostics() {
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "lubian-diagnostics.json"
+        panel.message = "诊断文件默认不含个人信息、路径和 Power.log 内容；上传前仍请自行检查"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try diagnosticData().write(to: url, options: .atomic); diagnosticStatus = "已导出诊断：\(url.lastPathComponent)" }
+        catch { diagnosticStatus = "导出诊断失败：\(error.localizedDescription)" }
+    }
     func resumeLive() {
         generation += 1; demo = false; tracker = Tracker(); file = nil
         connectionText = "正在连接当前对局…"
@@ -140,7 +156,7 @@ final class Model: ObservableObject {
             DispatchQueue.main.async {
                 self.reading = false
                 guard !self.demo, self.generation == token else { return }
-                self.tracker = result.tracker; self.file = result.file; self.lastLogUpdate = result.modified
+                self.tracker = result.tracker; self.file = result.file; self.lastLogUpdate = result.modified; self.lastLogBytes = result.bytes; self.lastLogTotal = result.total
                 if self.autoPlayer, let player = result.tracker.localPlayer { self.player = player }
                 self.identifyDeck()
                 self.status = result.message
@@ -275,10 +291,13 @@ struct ContentView: View {
                 Text(m.demo ? "演示" : "回合 \(m.tracker.turn)").font(.headline).padding(10).background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
             }
             Text(m.status).font(.callout).foregroundStyle(m.demo ? .orange : .secondary).textSelection(.enabled)
+            if !m.diagnosticStatus.isEmpty { Text(m.diagnosticStatus).font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Button("开启游戏日志") { m.configure() }
                 Button("选择日志") { m.chooseLogs() }
                 Button("导入牌组") { importing = true }
+                Button("导出诊断") { m.exportDiagnostics() }.help("导出已脱敏的 JSON，用于反馈问题")
+                Toggle("含套牌名", isOn: $m.includeDiagnosticNames).help("默认关闭；开启后附带已脱敏的当前套牌名")
                 Spacer()
                 Button("进入对局视图") {
                     m.resumeLive()
@@ -366,7 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "rectangle.split.3x1", accessibilityDescription: "炉边记牌器")
         let tray = NSMenu()
-        for (title, action) in [("打开设置", #selector(showSettings)), ("显示 / 隐藏左右面板", #selector(togglePanels)), ("点击穿透 / 交互模式", #selector(toggleLock)), ("折叠 / 展开左侧", #selector(toggleOwnCollapse)), ("折叠 / 展开右侧", #selector(toggleOpponentCollapse)), ("恢复两侧位置", #selector(resetPanels))] {
+        for (title, action) in [("打开设置", #selector(showSettings)), ("显示 / 隐藏左右面板", #selector(togglePanels)), ("点击穿透 / 交互模式", #selector(toggleLock)), ("折叠 / 展开左侧", #selector(toggleOwnCollapse)), ("折叠 / 展开右侧", #selector(toggleOpponentCollapse)), ("恢复两侧位置", #selector(resetPanels)), ("导出诊断信息…", #selector(exportDiagnostics))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; tray.addItem(item)
         }
         tray.addItem(.separator()); tray.addItem(withTitle: "退出炉边记牌器", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -378,6 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleLock() { overlays.locked.toggle() }
     @objc func toggleOwnCollapse() { overlays.toggleCollapsed(opponent: false) }
     @objc func toggleOpponentCollapse() { overlays.toggleCollapsed(opponent: true) }
+    @objc func exportDiagnostics() { model.exportDiagnostics() }
     @objc func resetPanels() { overlays.resetLayout() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showSettings(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

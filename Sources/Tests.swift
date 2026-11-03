@@ -169,6 +169,43 @@ import CoreGraphics
   let oldDeck = try JSONDecoder().decode([DeckCard].self, from: oldSaved)
   assert(oldDeck[0].sideboardOwner == nil)
   print("PASS: deck code vectors, pasted export, padding, 40-card sideboard, card mapping, missing database, malformed/truncated codes, legacy saved deck")
+  // 诊断导出：全部使用合成数据，验证脱敏与 JSON 结构。
+  let diagTracker = Tracker()
+  diagTracker.names = [1: "Alice#1234", 2: "Bobby"]
+  diagTracker.entities[10] = Entity(id: 10, card: "TEST_A", controller: 1, zone: "HAND", originalOwner: 1, originalCard: "TEST_A")
+  diagTracker.entities[11] = Entity(id: 11, card: "TEST_B", controller: 1, zone: "DECK", originalOwner: 1, originalCard: "TEST_B")
+  diagTracker.entities[12] = Entity(id: 12, card: "Alice#1234", controller: 2, zone: "DECK")
+  diagTracker.topCards[1] = [11]; diagTracker.fatigueCounts[2] = 3; diagTracker.processedLines = 42; diagTracker.active = true; diagTracker.source = "GameState"
+  diagTracker.playEvents = [PlayEvent(entity: 10, player: 1, card: "TEST_A"), PlayEvent(entity: 10, player: 1, card: "TEST_A")]
+  var diagLibrary = DeckLibrary()
+  let diagID = diagLibrary.save(SavedDeck(name: "Alice的私人套牌", cards: [a, b], source: "test"))
+  var diagInput = DiagnosticInput(tracker: diagTracker, library: diagLibrary, player: 1,
+    logRoot: URL(fileURLWithPath: "/Users/alice/Library/Hearthstone/Logs"), logFile: URL(fileURLWithPath: "/Users/alice/Hearthstone/Logs/Hearthstone_2026_01_01_00_00_00/Power.log"),
+    bytesRead: 100, logSize: 200, status: "日志读取失败：/Users/alice/Hearthstone/Logs/Power.log Alice#1234 Bobby")
+  assert(Redaction.path("/Users/alice/Hearthstone/Logs/Power.log") == "Power.log")
+  assert(Redaction.path("/Users/alice") == Redaction.pathPlaceholder && Redaction.path("") == nil)
+  assert(!Redaction.text("open /Users/alice/x y").contains("alice") && Redaction.text("Zed#98765 hi") == "<battle-tag> hi")
+  assert(Redaction.text("Bobby won", names: ["Bobby"]) == "<player> won")
+  assert(Redaction.identifier("TEST_A") == "TEST_A" && Redaction.identifier("Alice#1234") == Redaction.idPlaceholder)
+  let diagData = try DiagnosticReport.make(diagInput).json()
+  let diagText = String(decoding: diagData, as: UTF8.self)
+  for secret in ["/Users", "alice", "Alice", "1234", "Bobby", "私人套牌"] { assert(!diagText.contains(secret), "leaked \(secret)") }
+  let parsed = try JSONSerialization.jsonObject(with: diagData) as! [String: Any]
+  for key in ["schemaVersion", "generatedAt", "app", "runtime", "tracker", "deckMatching", "logReader", "privacy"] { assert(parsed[key] != nil, "missing \(key)") }
+  let parsedTracker = parsed["tracker"] as! [String: Any]
+  assert(parsedTracker["processedLines"] as? Int == 42 && parsedTracker["gameActive"] as? Bool == true)
+  assert((parsedTracker["playCountsByCardID"] as! [String: Int])["TEST_A"] == 2)
+  assert((parsedTracker["knownTopCardIDs"] as! [String: [String]])["1"] == ["TEST_B"])
+  assert((parsedTracker["fatigue"] as! [String: Int])["2"] == 3)
+  let parsedMatching = parsed["deckMatching"] as! [String: Any]
+  assert(parsedMatching["selectedDeckID"] as? String == diagID && parsedMatching["candidateCount"] as? Int == 1 && parsedMatching["selectedDeckName"] == nil)
+  let parsedLog = parsed["logReader"] as! [String: Any]
+  assert(parsedLog["rootName"] as? String == "Logs" && parsedLog["fileName"] as? String == "Power.log")
+  assert((parsed["privacy"] as! [String: Any])["includesDeckNames"] as? Bool == false)
+  diagInput.includeNames = true
+  let named = String(decoding: try DiagnosticReport.make(diagInput).json(), as: UTF8.self)
+  assert(named.contains("selectedDeckName") && !named.contains("Alice") && !named.contains("alice"), "opt-in names are still sanitized")
+  print("PASS: diagnostic export redacts paths, names and tags; JSON parses with expected keys; names opt-in")
   print("PASS: draw, mulligan, generated cards, stream deduplication, new game, numeric zones, malformed entity")
  }
 }
